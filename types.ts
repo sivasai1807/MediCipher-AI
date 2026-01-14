@@ -1,4 +1,8 @@
 
+export type AppView = 'prescriptions' | 'expiry' | 'map';
+
+export type LanguageCode = 'en' | 'es' | 'hi' | 'fr' | 'ar' | 'de';
+
 export interface Medicine {
   name: string;
   purpose: string;
@@ -10,12 +14,20 @@ export interface Medicine {
   confidence: 'High' | 'Medium' | 'Low';
 }
 
+export interface NearbyPlace {
+  name: string;
+  distance?: string;
+  uri?: string;
+  lat?: number;
+  lng?: number;
+}
+
 export interface PrescriptionResponse {
   clean_prescription_text: string;
   medicines: Medicine[];
   doctor_notes: string;
-  nearby_pharmacies: string[];
-  nearby_hospitals: string[];
+  nearby_pharmacies: NearbyPlace[];
+  nearby_hospitals: NearbyPlace[];
   expiry_alerts: string[];
   warnings: string[];
   overall_confidence: string;
@@ -27,7 +39,9 @@ export interface LocationState {
   error: string | null;
 }
 
-export interface ExpiryInput {
-  medicineName: string;
-  expiryDate: string;
+export interface ExpiryItem {
+  id: string;
+  name: string;
+  date: string;
+  status: 'safe' | 'warning' | 'expired';
 }

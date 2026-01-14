@@ -1,346 +1,414 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { analyzePrescription } from './services/geminiService';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { analyzePrescription, fetchNearbyHealthCenters } from './services/geminiService';
 import { fileToBase64, getCurrentLocation, getHealthTip } from './utils';
-import { PrescriptionResponse, LocationState, ExpiryInput } from './types';
+import { PrescriptionResponse, LocationState, LanguageCode, AppView, ExpiryItem, NearbyPlace } from './types';
 
-// Sub-components
-const MedicineCard: React.FC<{ med: any }> = ({ med }) => (
-  <div className="bg-white p-4 rounded-xl border border-blue-100 shadow-sm hover:shadow-md transition-shadow">
-    <div className="flex justify-between items-start mb-2">
-      <h3 className="text-lg font-bold text-blue-800">{med.name}</h3>
-      <span className={`px-2 py-1 text-xs font-semibold rounded ${
-        med.confidence === 'High' ? 'bg-green-100 text-green-700' : 
-        med.confidence === 'Medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'
-      }`}>
-        {med.confidence} confidence
-      </span>
+declare const L: any;
+
+// --- UI Translation Dictionary ---
+const UI_TEXT: Record<LanguageCode, any> = {
+  en: { 
+    scan: 'Prescription Scan', expiry: 'Expiry Tracker', map: 'Health Locator', 
+    upload: 'Upload Prescription', analyze: 'Analyze Now', safety: 'Safety Notice',
+    nearby: 'Medical Facilities', add: 'Track Medicine', name: 'Name', date: 'Expiry',
+    placeholder: 'e.g. Aspirin', notes: 'Medical Advice', extracted: 'Deciphered Results',
+    change: 'Change Photo', tip: 'Daily Wellness Tip', clear: 'Image must be clear and flat.'
+  },
+  es: { 
+    scan: 'Escaneo de Receta', expiry: 'Vencimiento', map: 'Localizador', 
+    upload: 'Subir Receta', analyze: 'Analizar Ahora', safety: 'Aviso de Seguridad',
+    nearby: 'Instalaciones Médicas', add: 'Seguir Medicina', name: 'Nombre', date: 'Vencimiento',
+    placeholder: 'ej. Aspirina', notes: 'Consejo Médico', extracted: 'Resultados Descifrados',
+    change: 'Cambiar Foto', tip: 'Consejo de Salud', clear: 'La imagen debe ser clara y plana.'
+  },
+  hi: { 
+    scan: 'नुस्खा स्कैन', expiry: 'समाप्ति ट्रैकर', map: 'स्वास्थ्य खोजक', 
+    upload: 'नुस्खा अपलोड करें', analyze: 'अभी विश्लेषण करें', safety: 'सुरक्षा सूचना',
+    nearby: 'चिकित्सा सुविधाएं', add: 'दवा जोड़ें', name: 'नाम', date: 'समाप्ति',
+    placeholder: 'उदा. एस्पिरिन', notes: 'चिकित्सा सलाह', extracted: 'परिणाम',
+    change: 'फोटो बदलें', tip: 'स्वास्थ्य टिप', clear: 'छवि स्पष्ट और सीधी होनी चाहिए।'
+  },
+  fr: { 
+    scan: 'Scan Ordonnance', expiry: 'Suivi Expiration', map: 'Localisateur Santé', 
+    upload: 'Télécharger', analyze: 'Analyser Maintenant', safety: 'Sécurité',
+    nearby: 'Établissements', add: 'Ajouter', name: 'Nom', date: 'Expiration',
+    placeholder: 'ex. Aspirine', notes: 'Conseils', extracted: 'Résultats',
+    change: 'Changer', tip: 'Conseil Santé', clear: 'L\'image doit être claire.'
+  },
+  ar: { 
+    scan: 'مسح الوصفة', expiry: 'تتبع الانتهاء', map: 'موقع الصحة', 
+    upload: 'تحميل الوصفة', analyze: 'تحليل الآن', safety: 'تنبيه',
+    nearby: 'المرافق الطبية', add: 'تتبع الدواء', name: 'الاسم', date: 'الانتهاء',
+    placeholder: 'مثال: أسبرين', notes: 'نصيحة طبية', extracted: 'النتائج',
+    change: 'تغيير الصورة', tip: 'نصيحة اليوم', clear: 'يجب أن تكون الصورة واضحة.'
+  },
+  de: { 
+    scan: 'Rezept Scan', expiry: 'Haltbarkeit', map: 'Gesundheitssuche', 
+    upload: 'Hochladen', analyze: 'Jetzt Analysieren', safety: 'Sicherheit',
+    nearby: 'Einrichtungen', add: 'Verfolgen', name: 'Name', date: 'Ablauf',
+    placeholder: 'z.B. Aspirin', notes: 'Ärztlicher Rat', extracted: 'Ergebnisse',
+    change: 'Foto ändern', tip: 'Gesundheitstipp', clear: 'Bild muss klar sein.'
+  }
+};
+
+// --- Sub-Modules ---
+
+const HealthMap: React.FC<{ userLoc: LocationState; lang: LanguageCode }> = ({ userLoc, lang }) => {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstance = useRef<any>(null);
+  const [data, setData] = useState<{pharmacies: any[], hospitals: any[]}>({pharmacies: [], hospitals: []});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (mapRef.current && !mapInstance.current) {
+      mapInstance.current = L.map(mapRef.current).setView([userLoc.lat || 0, userLoc.lng || 0], 14);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapInstance.current);
+    }
+    if (userLoc.lat && userLoc.lng && data.pharmacies.length === 0) {
+      setLoading(true);
+      fetchNearbyHealthCenters({ lat: userLoc.lat, lng: userLoc.lng }, lang)
+        .then(setData)
+        .finally(() => setLoading(false));
+    }
+  }, [userLoc, lang]);
+
+  useEffect(() => {
+    if (mapInstance.current && (data.pharmacies.length > 0 || data.hospitals.length > 0)) {
+      [...data.pharmacies, ...data.hospitals].forEach(p => {
+        if (p.lat && p.lng) {
+          const isHosp = p.name.toLowerCase().includes('hospital');
+          const color = isHosp ? 'red' : 'green';
+          L.circleMarker([p.lat, p.lng], { color, radius: 8 }).addTo(mapInstance.current).bindPopup(p.name);
+        }
+      });
+    }
+  }, [data]);
+
+  return (
+    <div className="bg-white p-6 rounded-[3rem] shadow-sm border border-slate-100 animate-in fade-in duration-700">
+      <div className="flex items-center justify-between mb-6 px-4">
+        <div>
+          <h2 className="text-2xl font-black text-slate-900">{UI_TEXT[lang].nearby}</h2>
+          <p className="text-sm text-slate-400 font-medium">Real-time facility mapping</p>
+        </div>
+        <div className="bg-slate-50 px-4 py-2 rounded-2xl border border-slate-100 flex items-center gap-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+          <span className="text-[10px] font-black uppercase text-slate-500">Live Grounding</span>
+        </div>
+      </div>
+      <div className="h-[600px] w-full rounded-[2.5rem] overflow-hidden border border-slate-200 shadow-inner relative">
+        {loading && (
+          <div className="absolute inset-0 bg-white/60 backdrop-blur-sm z-50 flex items-center justify-center">
+             <div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        )}
+        <div ref={mapRef} className="w-full h-full" />
+      </div>
     </div>
-    <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-3">
-      <p><span className="font-semibold text-gray-800">Purpose:</span> {med.purpose}</p>
-      <p><span className="font-semibold text-gray-800">Dosage:</span> {med.dosage}</p>
-      <p><span className="font-semibold text-gray-800">Timing:</span> {med.timing}</p>
-      <p><span className="font-semibold text-gray-800">Relation:</span> {med.food_relation}</p>
-      <p><span className="font-semibold text-gray-800">Duration:</span> {med.duration}</p>
+  );
+};
+
+const CabinetModule: React.FC<{ lang: LanguageCode }> = ({ lang }) => {
+  const [items, setItems] = useState<ExpiryItem[]>([]);
+  const [name, setName] = useState('');
+  const [date, setDate] = useState('');
+  const t = UI_TEXT[lang];
+
+  const handleAdd = () => {
+    if (!name || !date) return;
+    const exp = new Date(date);
+    const now = new Date();
+    const diff = (exp.getTime() - now.getTime()) / (1000 * 3600 * 24);
+    let status: any = 'safe';
+    if (diff < 0) status = 'expired';
+    else if (diff < 30) status = 'warning';
+    
+    setItems([{ id: Date.now().toString(), name, date, status }, ...items]);
+    setName(''); setDate('');
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-700">
+      <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100">
+        <h2 className="text-2xl font-black text-slate-900 mb-8">{t.expiry}</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
+          <input 
+            value={name} 
+            onChange={e => setName(e.target.value)} 
+            placeholder={t.placeholder} 
+            className="p-5 bg-slate-50 rounded-2xl border-0 ring-1 ring-slate-100 focus:ring-2 focus:ring-slate-900 transition-all outline-none font-medium" 
+          />
+          <input 
+            type="date" 
+            value={date} 
+            onChange={e => setDate(e.target.value)} 
+            className="p-5 bg-slate-50 rounded-2xl border-0 ring-1 ring-slate-100 focus:ring-2 focus:ring-slate-900 transition-all outline-none font-medium" 
+          />
+          <button onClick={handleAdd} className="bg-slate-900 text-white rounded-2xl font-black text-sm hover:bg-black transition-all shadow-xl shadow-slate-200 uppercase tracking-widest">{t.add}</button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {items.map(item => (
+            <div key={item.id} className="p-6 bg-slate-50 rounded-[2rem] border border-slate-100 flex items-center justify-between group">
+              <div className="flex items-center gap-4">
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg ${item.status === 'expired' ? 'bg-red-500 shadow-red-100' : item.status === 'warning' ? 'bg-orange-500 shadow-orange-100' : 'bg-green-500 shadow-green-100'}`}>
+                  <i className="fa-solid fa-pills"></i>
+                </div>
+                <div>
+                  <h4 className="font-black text-slate-800 leading-tight">{item.name}</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">{t.date}: {item.date}</p>
+                </div>
+              </div>
+              <button onClick={() => setItems(items.filter(i => i.id !== item.id))} className="w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:bg-red-50 hover:text-red-500 transition-all">
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+          ))}
+          {items.length === 0 && (
+            <div className="col-span-full py-20 text-center opacity-30">
+              <i className="fa-solid fa-box-archive text-5xl mb-4"></i>
+              <p className="font-bold text-lg">Your medicine cabinet is empty</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
-    <div className="bg-blue-50 p-3 rounded-lg border-l-4 border-blue-400">
-      <p className="text-sm font-medium text-blue-900 italic">" {med.how_to_use} "</p>
-    </div>
-  </div>
-);
+  );
+};
+
+// --- Main App ---
 
 const App: React.FC = () => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [view, setView] = useState<AppView>('prescriptions');
+  const [lang, setLang] = useState<LanguageCode>('en');
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PrescriptionResponse | null>(null);
   const [location, setLocation] = useState<LocationState>({ lat: null, lng: null, error: null });
-  const [expiryInputs, setExpiryInputs] = useState<ExpiryInput[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [dailyTip, setDailyTip] = useState('');
+  const [tip, setTip] = useState('');
 
   useEffect(() => {
-    setDailyTip(getHealthTip());
+    setTip(getHealthTip());
     getCurrentLocation()
       .then(loc => setLocation({ ...loc, error: null }))
-      .catch(err => setLocation(prev => ({ ...prev, error: err.message })));
+      .catch(e => setLocation(prev => ({ ...prev, error: e.message })));
   }, []);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setSelectedFile(file);
-      setPreviewUrl(URL.createObjectURL(file));
-      setError(null);
-    }
-  };
+  const t = UI_TEXT[lang];
 
-  const addExpiryInput = () => {
-    setExpiryInputs([...expiryInputs, { medicineName: '', expiryDate: '' }]);
-  };
-
-  const updateExpiryInput = (index: number, field: keyof ExpiryInput, value: string) => {
-    const newInputs = [...expiryInputs];
-    newInputs[index][field] = value;
-    setExpiryInputs(newInputs);
-  };
-
-  const handleAnalyze = async () => {
-    if (!selectedFile) {
-      setError("Please select a prescription image first.");
-      return;
-    }
-
+  const handleProcess = async () => {
+    if (!file) return;
     setLoading(true);
-    setError(null);
     try {
-      const base64 = await fileToBase64(selectedFile);
-      const data = await analyzePrescription(
-        base64,
-        { lat: location.lat, lng: location.lng },
-        expiryInputs.map(i => ({ name: i.medicineName, date: i.expiryDate }))
-      );
-      setResult(data);
-    } catch (err: any) {
-      setError(err.message || "An unexpected error occurred.");
+      const b64 = await fileToBase64(file);
+      const res = await analyzePrescription(b64, location, lang);
+      setResult(res);
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoading(false);
     }
   };
 
-  const resetApp = () => {
-    setSelectedFile(null);
-    setPreviewUrl(null);
-    setResult(null);
-    setExpiryInputs([]);
-    setError(null);
-  };
-
   return (
-    <div className="min-h-screen pb-12">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
-        <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 selection:bg-slate-900 selection:text-white">
+      {/* Navbar */}
+      <header className="bg-white/80 backdrop-blur-xl border-b border-slate-100 sticky top-0 z-[1000]">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600 w-10 h-10 rounded-xl flex items-center justify-center text-white">
-              <i className="fa-solid fa-file-medical text-xl"></i>
+            <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white shadow-xl">
+              <i className="fa-solid fa-briefcase-medical text-lg"></i>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-900 leading-none">MediCipher AI</h1>
-              <p className="text-xs text-gray-500 font-medium">Smart Prescription Assistant</p>
-            </div>
+            <h1 className="text-xl font-black tracking-tighter uppercase italic">MediCipher</h1>
           </div>
-          <div className="hidden md:block">
-            <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-100 px-3 py-1.5 rounded-full">
-              <i className="fa-solid fa-location-dot text-blue-500"></i>
-              {location.lat ? 'Location Active' : 'Location Not Set'}
+
+          <div className="flex items-center gap-6">
+            <div className="hidden lg:flex items-center gap-2 bg-slate-50 px-4 py-2 rounded-2xl border border-slate-100">
+              <i className="fa-solid fa-location-arrow text-slate-400 text-xs"></i>
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{location.lat ? 'Location Sync' : 'Static Mode'}</span>
             </div>
+            <select 
+              value={lang} 
+              onChange={e => setLang(e.target.value as LanguageCode)}
+              className="bg-white border-2 border-slate-100 rounded-2xl px-5 py-2 text-sm font-black outline-none hover:border-slate-300 transition-all cursor-pointer"
+            >
+              <option value="en">English</option>
+              <option value="es">Español</option>
+              <option value="hi">हिन्दी</option>
+              <option value="fr">Français</option>
+              <option value="ar">العربية</option>
+              <option value="de">Deutsch</option>
+            </select>
           </div>
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 mt-8">
-        {!result ? (
-          <div className="space-y-8 animate-in fade-in duration-500">
-            {/* Health Tip */}
-            <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-lg flex items-center gap-4">
-              <div className="bg-white/20 p-3 rounded-full">
-                <i className="fa-solid fa-lightbulb text-xl"></i>
-              </div>
-              <div>
-                <h4 className="font-bold text-sm uppercase tracking-wider opacity-80">Daily Health Tip</h4>
-                <p className="text-lg font-medium">{dailyTip}</p>
-              </div>
-            </div>
+      <main className="max-w-6xl mx-auto px-6 mt-12">
+        {/* Module Nav */}
+        <nav className="flex items-center bg-white p-2 rounded-[2.5rem] shadow-sm border border-slate-100 mb-12 w-fit mx-auto sticky top-24 z-[999] backdrop-blur-md">
+          <button onClick={() => setView('prescriptions')} className={`px-8 py-3.5 rounded-[2rem] text-sm font-black transition-all uppercase tracking-widest ${view === 'prescriptions' ? 'bg-slate-900 text-white shadow-2xl shadow-slate-300' : 'text-slate-400 hover:text-slate-900'}`}>
+            {t.scan}
+          </button>
+          <button onClick={() => setView('expiry')} className={`px-8 py-3.5 rounded-[2rem] text-sm font-black transition-all uppercase tracking-widest ${view === 'expiry' ? 'bg-slate-900 text-white shadow-2xl shadow-slate-300' : 'text-slate-400 hover:text-slate-900'}`}>
+            {t.expiry}
+          </button>
+          <button onClick={() => setView('map')} className={`px-8 py-3.5 rounded-[2rem] text-sm font-black transition-all uppercase tracking-widest ${view === 'map' ? 'bg-slate-900 text-white shadow-2xl shadow-slate-300' : 'text-slate-400 hover:text-slate-900'}`}>
+            {t.map}
+          </button>
+        </nav>
 
-            {/* Upload Section */}
-            <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-                <i className="fa-solid fa-upload text-blue-600"></i>
-                Upload Prescription
-              </h2>
-              
-              <div className="flex flex-col md:flex-row gap-8">
-                <div className="flex-1">
-                  <label className="group relative flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-gray-300 rounded-2xl cursor-pointer bg-gray-50 hover:bg-gray-100 hover:border-blue-400 transition-all overflow-hidden">
-                    {previewUrl ? (
-                      <img src={previewUrl} alt="Preview" className="w-full h-full object-contain p-2" />
+        {/* Content */}
+        {view === 'prescriptions' && (
+          <div className="space-y-10">
+            {!result ? (
+              <div className="max-w-3xl mx-auto space-y-10 animate-in fade-in duration-500">
+                <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 text-center relative overflow-hidden">
+                  <div className="mb-10">
+                    <h2 className="text-4xl font-black text-slate-900 mb-3">{t.upload}</h2>
+                    <p className="text-slate-400 font-medium">{t.clear}</p>
+                  </div>
+                  
+                  <label className="block w-full h-96 bg-slate-50/50 rounded-[3rem] border-2 border-dashed border-slate-200 cursor-pointer group hover:bg-slate-50 transition-all overflow-hidden relative">
+                    {preview ? (
+                      <img src={preview} className="w-full h-full object-contain p-6" />
                     ) : (
-                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                        <i className="fa-solid fa-cloud-arrow-up text-4xl text-gray-400 mb-3 group-hover:text-blue-500 transition-colors"></i>
-                        <p className="mb-2 text-sm text-gray-500"><span className="font-semibold">Click to upload</span> or drag and drop</p>
-                        <p className="text-xs text-gray-400">Doctor's handwritten note (PNG, JPG)</p>
+                      <div className="flex flex-col items-center justify-center h-full">
+                        <div className="w-20 h-20 bg-white rounded-3xl shadow-sm border border-slate-100 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                          <i className="fa-solid fa-camera-retro text-slate-400 text-3xl"></i>
+                        </div>
+                        <span className="text-slate-400 font-black uppercase tracking-widest text-xs">Capture Prescription</span>
                       </div>
                     )}
-                    <input type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
+                    <input type="file" className="hidden" accept="image/*" onChange={e => {
+                      if (e.target.files?.[0]) {
+                        setFile(e.target.files[0]);
+                        setPreview(URL.createObjectURL(e.target.files[0]));
+                      }
+                    }} />
                   </label>
-                </div>
 
-                <div className="flex-1 space-y-4">
-                  <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-100">
-                    <h4 className="text-sm font-bold text-yellow-800 mb-2 flex items-center gap-2">
-                      <i className="fa-solid fa-circle-exclamation"></i>
-                      Optional: Check Expiry
-                    </h4>
-                    <div className="space-y-2">
-                      {expiryInputs.map((input, idx) => (
-                        <div key={idx} className="flex gap-2">
-                          <input 
-                            placeholder="Medicine Name"
-                            className="flex-1 text-sm border p-2 rounded-lg"
-                            value={input.medicineName}
-                            onChange={(e) => updateExpiryInput(idx, 'medicineName', e.target.value)}
-                          />
-                          <input 
-                            type="date"
-                            className="text-sm border p-2 rounded-lg"
-                            value={input.expiryDate}
-                            onChange={(e) => updateExpiryInput(idx, 'expiryDate', e.target.value)}
-                          />
-                        </div>
-                      ))}
-                      <button 
-                        onClick={addExpiryInput}
-                        className="text-xs font-bold text-blue-600 hover:underline"
-                      >
-                        + Add Medicine to Check
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={loading || !selectedFile}
-                    className={`w-full py-4 rounded-2xl font-bold text-white shadow-xl transition-all flex items-center justify-center gap-3 ${
-                      loading || !selectedFile ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 active:scale-95'
-                    }`}
+                  <button 
+                    onClick={handleProcess} 
+                    disabled={!file || loading}
+                    className={`w-full mt-10 py-6 rounded-[2.5rem] font-black text-xl text-white shadow-2xl transition-all uppercase tracking-[0.2em] ${!file || loading ? 'bg-slate-300' : 'bg-slate-900 hover:bg-black active:scale-[0.98]'}`}
                   >
-                    {loading ? (
-                      <>
-                        <i className="fa-solid fa-circle-notch fa-spin"></i>
-                        Analyzing Handwriting...
-                      </>
-                    ) : (
-                      <>
-                        <i className="fa-solid fa-wand-magic-sparkles"></i>
-                        Decipher Prescription
-                      </>
-                    )}
+                    {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : t.analyze}
                   </button>
-                  {error && <p className="text-red-500 text-sm font-medium text-center">{error}</p>}
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-8 animate-in slide-in-from-bottom duration-700">
-            {/* Back Button */}
-            <button onClick={resetApp} className="flex items-center gap-2 text-gray-500 hover:text-blue-600 font-semibold transition-colors">
-              <i className="fa-solid fa-arrow-left"></i>
-              Analyze another one
-            </button>
-
-            {/* Results Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-3xl font-black text-gray-900">Digitalized Prescription</h2>
-                <p className="text-gray-500 font-medium">Verified by AI Medical Assistant</p>
-              </div>
-              <div className="flex items-center gap-2 bg-green-50 text-green-700 px-4 py-2 rounded-xl border border-green-100">
-                <i className="fa-solid fa-check-circle"></i>
-                <span className="font-bold">Accuracy: {result.overall_confidence}</span>
-              </div>
-            </div>
-
-            {/* Warnings Alert */}
-            {result.warnings.length > 0 && (
-              <div className="bg-red-50 border-2 border-red-200 p-5 rounded-2xl space-y-2">
-                <h4 className="text-red-700 font-bold flex items-center gap-2">
-                  <i className="fa-solid fa-triangle-exclamation"></i>
-                  Critical Safety Warnings
-                </h4>
-                <ul className="list-disc list-inside text-red-600 text-sm space-y-1">
-                  {result.warnings.map((w, idx) => <li key={idx}>{w}</li>)}
-                </ul>
-              </div>
-            )}
-
-            {/* Expiry Alerts */}
-            {result.expiry_alerts.length > 0 && (
-              <div className="bg-orange-50 border-l-4 border-orange-400 p-4 rounded-r-xl">
-                <h4 className="text-orange-800 font-bold flex items-center gap-2 mb-2">
-                  <i className="fa-solid fa-hourglass-half"></i>
-                  Medicine Expiry Alerts
-                </h4>
-                <ul className="list-disc list-inside text-orange-700 text-sm">
-                  {result.expiry_alerts.map((a, idx) => <li key={idx}>{a}</li>)}
-                </ul>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Main Prescription Data */}
-              <div className="lg:col-span-2 space-y-6">
-                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                  <h3 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Extracted Medicines</h3>
-                  <div className="grid gap-4">
-                    {result.medicines.map((med, idx) => (
-                      <MedicineCard key={idx} med={med} />
-                    ))}
-                  </div>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                  <h3 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Doctor's Original Text</h3>
-                  <p className="text-gray-600 leading-relaxed font-mono bg-gray-50 p-4 rounded-xl border border-gray-200">
-                    {result.clean_prescription_text}
-                  </p>
+                <div className="bg-slate-900 text-white p-10 rounded-[3rem] shadow-2xl relative overflow-hidden">
+                   <div className="absolute top-0 right-0 opacity-10 translate-x-8 -translate-y-8">
+                     <i className="fa-solid fa-notes-medical text-[12rem]"></i>
+                   </div>
+                   <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400 mb-4">{t.tip}</h4>
+                   <p className="text-2xl font-bold leading-snug max-w-lg">{tip}</p>
                 </div>
               </div>
-
-              {/* Sidebar Info */}
-              <div className="space-y-6">
-                <div className="bg-blue-900 text-white p-6 rounded-3xl shadow-lg">
-                  <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                    <i className="fa-solid fa-user-doctor"></i>
-                    Doctor's Notes
-                  </h3>
-                  <p className="text-blue-100 text-sm leading-relaxed mb-4">
-                    {result.doctor_notes || "No additional notes detected."}
-                  </p>
-                  <div className="pt-4 border-t border-blue-800 flex items-center gap-3">
-                    <i className="fa-solid fa-info-circle text-blue-300"></i>
-                    <p className="text-[10px] text-blue-300 uppercase font-bold">Disclaimer: Always verify with your physician or pharmacist before consumption.</p>
-                  </div>
-                </div>
-
-                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <i className="fa-solid fa-map-location-dot text-blue-600"></i>
-                    Nearby Care
-                  </h3>
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Pharmacies</h4>
-                      <ul className="space-y-2">
-                        {result.nearby_pharmacies.map((p, idx) => (
-                          <li key={idx} className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                            <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
-                            {p}
-                          </li>
-                        ))}
-                      </ul>
+            ) : (
+              <div className="space-y-10 animate-in slide-in-from-bottom-10 duration-700">
+                <div className="flex items-center justify-between px-6">
+                  <button onClick={() => setResult(null)} className="group flex items-center gap-4 text-slate-400 hover:text-slate-900 font-black transition-all uppercase tracking-widest text-xs">
+                    <div className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center group-hover:scale-110 transition-all border border-slate-100">
+                      <i className="fa-solid fa-arrow-left"></i>
                     </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Medical Centers</h4>
-                      <ul className="space-y-2">
-                        {result.nearby_hospitals.map((h, idx) => (
-                          <li key={idx} className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                            <span className="w-1.5 h-1.5 bg-blue-500 rounded-full"></span>
-                            {h}
-                          </li>
-                        ))}
-                      </ul>
+                    New Scan
+                  </button>
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Confidence Score</p>
+                       <p className="text-sm font-black text-blue-600">{result.overall_confidence}</p>
                     </div>
                   </div>
                 </div>
+
+                {/* Emergency Warnings Only */}
+                {result.warnings.length > 0 && (
+                  <div className="bg-red-600 text-white p-8 rounded-[3rem] shadow-xl flex items-start gap-6 animate-pulse-slow">
+                    <div className="bg-white/20 p-4 rounded-3xl shrink-0">
+                      <i className="fa-solid fa-triangle-exclamation text-3xl"></i>
+                    </div>
+                    <div>
+                      <h4 className="font-black uppercase tracking-[0.2em] text-xs mb-2 opacity-80">{t.safety}</h4>
+                      {result.warnings.map((w, i) => <p key={i} className="text-lg font-bold leading-tight">{w}</p>)}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+                  <div className="lg:col-span-8 space-y-10">
+                    <section className="bg-white p-10 rounded-[4rem] border border-slate-100 shadow-sm">
+                      <h3 className="text-3xl font-black mb-10 text-slate-900 border-b border-slate-50 pb-6">{t.extracted}</h3>
+                      <div className="grid gap-8">
+                        {result.medicines.map((med, i) => (
+                          <div key={i} className="group p-8 bg-slate-50 rounded-[3rem] border border-slate-100 hover:border-slate-300 transition-all">
+                            <div className="flex justify-between items-start mb-6">
+                              <div>
+                                <h4 className="text-2xl font-black text-slate-900 group-hover:text-blue-600 transition-colors">{med.name}</h4>
+                                <p className="text-sm font-bold text-slate-400 mt-1 uppercase tracking-wider">{med.purpose}</p>
+                              </div>
+                              <span className="text-[10px] font-black px-4 py-1.5 bg-white rounded-full border border-slate-200 text-slate-500 uppercase tracking-widest shadow-sm">Accuracy: {med.confidence}</span>
+                            </div>
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 text-[10px] font-black text-slate-500 mb-8 uppercase tracking-[0.15em]">
+                              <div className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-slate-300 rounded-full"></div>{med.dosage}</div>
+                              <div className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-slate-300 rounded-full"></div>{med.timing}</div>
+                              <div className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-slate-300 rounded-full"></div>{med.food_relation}</div>
+                              <div className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-slate-300 rounded-full"></div>{med.duration}</div>
+                            </div>
+                            <div className="bg-white p-6 rounded-[2rem] text-sm font-bold text-slate-700 border border-slate-100 shadow-inner italic leading-relaxed">
+                              "{med.how_to_use}"
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  </div>
+                  
+                  <div className="lg:col-span-4 space-y-10">
+                    <section className="bg-slate-900 text-white p-10 rounded-[4rem] shadow-2xl relative overflow-hidden">
+                      <div className="absolute bottom-0 right-0 opacity-5 translate-x-10 translate-y-10">
+                        <i className="fa-solid fa-stethoscope text-[15rem]"></i>
+                      </div>
+                      <h3 className="text-xl font-black mb-8 flex items-center gap-3">
+                         <div className="w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center text-sm shadow-lg shadow-blue-500/50">
+                            <i className="fa-solid fa-user-doctor"></i>
+                         </div>
+                         {t.notes}
+                      </h3>
+                      <p className="text-blue-100 text-lg leading-relaxed mb-8 font-medium italic opacity-90">"{result.doctor_notes}"</p>
+                      <div className="pt-6 border-t border-white/10 text-[9px] font-black text-slate-500 uppercase tracking-[0.3em] leading-normal">
+                         System: Medical OCR v2.5
+                         <br/>Deciphered & Translated
+                      </div>
+                    </section>
+                    
+                    <section className="bg-white p-10 rounded-[4rem] border border-slate-100 shadow-sm">
+                      <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em] mb-6">Handwriting Trace</h3>
+                      <div className="text-[11px] font-mono font-medium text-slate-400 bg-slate-50 p-6 rounded-[2rem] border border-slate-100 break-words whitespace-pre-wrap leading-relaxed">
+                        {result.clean_prescription_text}
+                      </div>
+                    </section>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
+
+        {view === 'expiry' && <CabinetModule lang={lang} />}
+
+        {view === 'map' && <HealthMap userLoc={location} lang={lang} />}
       </main>
 
-      {/* Footer sticky tip for mobile */}
-      {!result && !loading && (
-        <div className="fixed bottom-6 left-4 right-4 md:hidden">
-          <div className="glass-effect p-3 rounded-2xl shadow-xl flex items-center gap-3 border border-blue-100">
-            <div className="bg-blue-600 w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0">
-              <i className="fa-solid fa-camera text-xs"></i>
-            </div>
-            <p className="text-xs font-bold text-gray-700">Tap the center to capture a clear photo of your prescription</p>
-          </div>
-        </div>
-      )}
+      <style>{`
+        .animate-in { animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1); }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-pulse-slow { animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .85; } }
+        .leaflet-container { border-radius: 2.5rem !important; }
+        .leaflet-popup-content-wrapper { border-radius: 1.5rem !important; padding: 0.25rem !important; font-weight: 700; }
+      `}</style>
     </div>
   );
 };
