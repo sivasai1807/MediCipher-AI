@@ -9,37 +9,42 @@ const getLanguageName = (code: LanguageCode) => {
     hi: 'Hindi',
     fr: 'French',
     ar: 'Arabic',
-    de: 'German'
+    de: 'German',
+    te: 'Telugu',
+    zh: 'Chinese',
+    ja: 'Japanese',
+    pt: 'Portuguese',
+    it: 'Italian'
   };
   return map[code];
 };
 
-const SYSTEM_INSTRUCTION = `You are a world-class medical deciphering expert. 
-Your task is to analyze handwritten prescriptions with 100% precision.
+const SYSTEM_INSTRUCTION = `You are an elite Medical AI specialist. Your objective is 100% transcription accuracy.
+Decipher doctor handwriting with extreme care.
 
-CRITICAL RULES:
-1. DETECT CLEARLY: You must be extremely careful with dosages. If something is illegible, mark it as "Unclear".
-2. LANGUAGE: You must translate ALL medical fields (purpose, timing, how_to_use, doctor_notes) into the user's requested language.
-3. EMERGENCY ONLY WARNINGS: Only populate the 'warnings' array if there is a severe risk (e.g., extremely high dosage, drug interaction, or complete illegibility of a critical field). Otherwise, keep it empty.
-4. Correct all spelling errors and expand medical abbreviations (e.g., OD -> Once Daily) into the target language.
-5. Use Google Maps grounding to find REAL pharmacies and hospitals nearby.
-6. FORMAT: Always respond with a raw JSON object within markdown code blocks (e.g., \`\`\`json ... \`\`\`).`;
+OPERATIONAL PROTOCOLS:
+1. PRECISION: If a dosage or name is ambiguous, mark as "Unclear". Do not guess.
+2. NATIVE TRANSLATION: Translate every field (purpose, timing, how_to_use, doctor_notes, clean_prescription_text) into the user's chosen language.
+3. EMERGENCY PROTOCOL: Warnings array is strictly for severe risks (lethal dosage, harmful drug combinations, or critical missing info).
+4. GROUNDING: Identify REAL nearby pharmacies and hospitals using Google Maps tools.
+5. FORMAT: Strictly return JSON inside markdown code blocks.`;
 
 export const analyzePrescription = async (
   base64Image: string,
   location: { lat: number | null; lng: number | null },
   language: LanguageCode
 ): Promise<PrescriptionResponse> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  // Fix: Initializing GoogleGenAI with process.env.API_KEY directly according to documentation.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const langName = getLanguageName(language);
 
-  const prompt = `Analyze this prescription.
-  TARGET LANGUAGE: ${langName} (Translate all descriptions and notes).
-  User Location: ${location.lat}, ${location.lng}.
+  const prompt = `Task: Analyze this medical prescription image.
+  TARGET LANGUAGE: ${langName}.
+  USER LOCATION: ${location.lat}, ${location.lng}.
 
-  Provide a detailed JSON response following this structure:
+  Return a JSON object with:
   {
-    "clean_prescription_text": "Full transcribed text in ${langName}",
+    "clean_prescription_text": "Detailed transcription in ${langName}",
     "medicines": [{
       "name": "Corrected Med Name",
       "purpose": "Translated purpose",
@@ -47,15 +52,15 @@ export const analyzePrescription = async (
       "timing": "Translated timing",
       "food_relation": "Translated food relation",
       "duration": "Translated duration",
-      "how_to_use": "Simple patient instructions in ${langName}",
+      "how_to_use": "Simplified usage instructions in ${langName}",
       "confidence": "High|Medium|Low"
     }],
-    "doctor_notes": "Advice in ${langName}",
-    "nearby_pharmacies": [{"name": "Name", "lat": number, "lng": number}],
-    "nearby_hospitals": [{"name": "Name", "lat": number, "lng": number}],
+    "doctor_notes": "Professional summary in ${langName}",
+    "nearby_pharmacies": [{"name": "Store Name", "lat": number, "lng": number}],
+    "nearby_hospitals": [{"name": "Facility Name", "lat": number, "lng": number}],
     "expiry_alerts": [],
-    "warnings": ["ONLY include if emergency risk"],
-    "overall_confidence": "e.g. 95%"
+    "warnings": [],
+    "overall_confidence": "e.g., 100%"
   }`;
 
   try {
@@ -67,7 +72,6 @@ export const analyzePrescription = async (
       ]}],
       config: { 
         systemInstruction: SYSTEM_INSTRUCTION,
-        // responseMimeType: "application/json" is NOT allowed when using googleMaps tool
         tools: [{ googleMaps: {} }]
       },
     });
@@ -78,8 +82,8 @@ export const analyzePrescription = async (
     
     return JSON.parse(jsonStr) as PrescriptionResponse;
   } catch (error) {
-    console.error("Analysis Error:", error);
-    throw new Error("Handwriting analysis failed. Please ensure the image is bright and clear.");
+    console.error("Analysis Failure:", error);
+    throw new Error("Unable to read image. Please retake with better lighting and focus.");
   }
 };
 
@@ -87,22 +91,19 @@ export const fetchNearbyHealthCenters = async (
   location: { lat: number; lng: number },
   language: LanguageCode
 ): Promise<{ pharmacies: any[], hospitals: any[] }> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  // Fix: Initializing GoogleGenAI with process.env.API_KEY directly according to documentation.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const langName = getLanguageName(language);
   
-  const prompt = `Find all pharmacies and hospitals within 5km of Lat: ${location.lat}, Lng: ${location.lng}. 
-  Provide results in ${langName}. 
-  Return a JSON object: { "pharmacies": [{"name", "lat", "lng", "distance"}], "hospitals": [{"name", "lat", "lng", "distance"}] }
-  Wrap the JSON in \`\`\`json code blocks.`;
+  const prompt = `Identify real medical facilities (Pharmacies and Hospitals) within 5km of Lat: ${location.lat}, Lng: ${location.lng}. 
+  Provide labels in ${langName}. 
+  JSON Output: { "pharmacies": [{"name", "lat", "lng"}], "hospitals": [{"name", "lat", "lng"}] }`;
 
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [{ text: prompt }],
-      config: { 
-        // responseMimeType: "application/json" is NOT allowed when using googleMaps tool
-        tools: [{ googleMaps: {} }]
-      }
+      config: { tools: [{ googleMaps: {} }] }
     });
     
     const text = response.text || '';
@@ -111,7 +112,6 @@ export const fetchNearbyHealthCenters = async (
     
     return JSON.parse(jsonStr);
   } catch (e) {
-    console.error("Fetch Health Centers Error:", e);
     return { pharmacies: [], hospitals: [] };
   }
 };

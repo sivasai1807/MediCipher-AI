@@ -1,7 +1,7 @@
 
 export type AppView = 'prescriptions' | 'expiry' | 'map';
 
-export type LanguageCode = 'en' | 'es' | 'hi' | 'fr' | 'ar' | 'de';
+export type LanguageCode = 'en' | 'es' | 'hi' | 'fr' | 'ar' | 'de' | 'te' | 'zh' | 'ja' | 'pt' | 'it';
 
 export interface Medicine {
   name: string;
