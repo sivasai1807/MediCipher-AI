@@ -1,0 +1,8 @@
+{
+  "name": "MediCipher AI - Smart Prescription Assistant",
+  "description": "An advanced medical AI assistant that deciphers handwritten doctor prescriptions, provides patient-friendly medicine guidance, and identifies nearby healthcare facilities.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
